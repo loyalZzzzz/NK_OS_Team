@@ -78,8 +78,13 @@ int kern_init(void) {
 **2.1 实验内容**
 
 为了熟悉使用 QEMU 和 GDB 的调试方法，请使用 GDB 跟踪 QEMU 模拟的 RISC-V 从加电开始，直到执行内核第一条指令（跳转到 0x80200000）的整个过程。通过调试，请思考并回答：RISC-V 硬件加电后最初执行的几条指令位于什么地址？它们主要完成了哪些功能？请在报告中简要记录你的调试过程、观察结果和问题的答案。
+
+**2.2 实验环境**
+- 硬件模拟器：QEMU (qemu-system-riscv64)
+- 调试器：GDB (riscv64-unknown-elf-gdb)
+- 引导加载程序：OpenSBI (QEMU 默认加载)
   
-**2.2 实验步骤**
+**2.3 实验步骤**
 1. 启动调试会话： 打开一个终端，执行 make qemu，打开第二个终端，执行 make gdb
 2. 查看pc寄存器当前位置：`(gdb) i r pc`
 3. 执行单步汇编指令： `si`
@@ -90,7 +95,7 @@ int kern_init(void) {
    (gdb) rc   # 让程序向后运行，直到遇到上一个断点或程序起点
    ```
    
-**2.3 实验过程及结果**
+**2.4 实验过程及结果**
 
 首先，启动qemu,在lab1的源码的目录下执行命令`make qemu`
 - [ ] ![12](https://hackmd.io/_uploads/rk4_aIT2xe.jpg)
