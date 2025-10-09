@@ -30,16 +30,30 @@ bootstack:
     .global bootstacktop
 bootstacktop:
 ```
-**指令 la sp, bootstacktop 完成了什么操作，目的是什么？**
+**1. 指令 la sp, bootstacktop 完成了什么操作，目的是什么？**
+```
+la sp, bootstacktop
+```
+- la: Load Address 的缩写。这是一个伪指令，汇编器会把它转换成一条或多条实际的机器指令，其作用是将一个符号的地址加载到寄存器中。
+- sp: Stack Pointer 寄存器。栈指针，它永远指向当前栈的栈顶。
+- bootstacktop: 这是稍后在数据段中定义的一个标签，它代表了我们为内核准备的初始栈空间的最高地址。
+
 ```
 bootstack:
     .space KSTACKSIZE
     .global bootstacktop
 ```
 这段代码分配了<u>KSTACKSIZE</u>大小的栈内存空间，将bootstack设置为栈底，bootstacktop设置为栈顶。
-kern_entry是内核的入口函数,la sp, bootstacktop将bootstacktop对应的栈顶地址赋值给sp寄存器，目的是初始化栈，为栈分配内存空间,为c语言准备了运行环境。
-**tail kern_init 完成了什么操作，目的是什么？**
-tail kern_init 会将 kern_init 函数的地址加载到程序计数器（pc）中，实现跳转到 kern_init 执行，并且tail 跳转不会保存当前指令的返回地址到 $ra 寄存器（返回地址寄存器），也就是不会再回到当前位置执行了。
+
+kern_entry是内核的入口函数,`la sp, bootstacktop` 将bootstacktop对应的栈顶地址赋值给sp寄存器，目的是初始化内核的栈，为栈分配内存空间,为c语言准备了运行环境。
+
+**2. tail kern_init 完成了什么操作，目的是什么？**
+```
+tail kern_init
+```
+- tail: 一条经过优化的跳转指令，代表 "尾调用 (Tail Call)"。tail 指令不会保存返回地址。它直接用 kern_init 的栈帧替换掉当前的栈帧。
+- kern_init: 用 C 语言编写的内核初始化函数。
+这句命令会将 kern_init 函数的地址加载到程序计数器（pc）中，实现跳转到 kern_init 执行，并且tail 跳转不会保存当前指令的返回地址到 $ra 寄存器（返回地址寄存器），也就是不会再回到当前位置执行了。
 kern_init函数在kern/init/init.c里
 ```
 #include <stdio.h>
