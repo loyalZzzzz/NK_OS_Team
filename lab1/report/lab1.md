@@ -142,6 +142,29 @@ t0             0x80000000       2147483648
 所以PC跳转到0x80000000处执行指令。
 使用`watch *0x80200000`观察内核加载瞬间，避免单步跟踪大量代码。
 
+在运行到断点处```kern_entry```后，我们又尝试分析了部分指令，输入```x/10i $pc```后，我们可以看到后续运行的指令如下所示，可以看到有一个跳转指令，跳转到我们```init.c```文件中的```kern_init```函数，也就是我们内核的真实入口处。
+
+```
+(gdb) b* kern_entry  
+Breakpoint 1 at 0x80200000: file kern/init/entry.S, line 7.
+(gdb) c
+Continuing.
+
+Breakpoint 1, kern_entry () at kern/init/entry.S:7
+7           la sp, bootstacktop
+(gdb) x/10i $pc
+=> 0x80200000 <kern_entry>:     auipc   sp,0x3
+   0x80200004 <kern_entry+4>:   mv      sp,sp
+   0x80200008 <kern_entry+8>:   j       0x8020000a <kern_init>
+   0x8020000a <kern_init>:      auipc   a0,0x3
+   0x8020000e <kern_init+4>:    addi    a0,a0,-2
+   0x80200012 <kern_init+8>:    auipc   a2,0x3
+   0x80200016 <kern_init+12>:   addi    a2,a2,-10
+   0x8020001a <kern_init+16>:   addi    sp,sp,-16
+   0x8020001c <kern_init+18>:   li      a1,0
+   0x8020001e <kern_init+20>:   sub     a2,a2,a0
+   ```
+
 ## 实验中遇到的问题
 **1.输入指令 make qemu 时报错如下**
 ```
