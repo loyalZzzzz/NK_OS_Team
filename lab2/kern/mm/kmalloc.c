@@ -200,63 +200,141 @@ kfree(void *ptr) {
 void
 kmalloc_check(void) {
     cprintf("kmalloc_check: starting SLUB/kmalloc system test.\n");
+    cprintf("\n");
+    void *p_array[500];
+    int slab_count;
+    void *current_slab_addr;
 
     // --- 测试 1: 边界情况和无效输入 ---
     cprintf("  - Test 1: Boundary and invalid cases...\n");
-    assert(kmalloc(0) == NULL);
-    assert(kmalloc(4097) == NULL); // 超过最大支持
-    kfree(NULL); // 应安全处理
+    void *res0 = kmalloc(0);
+    cprintf("    kmalloc(0) returned: %p\n", res0);
+    assert(res0 == NULL);
+    void *res_large = kmalloc(4097);
+    cprintf("    kmalloc(4097) returned: %p\n", res_large);
+    assert(res_large == NULL);
+    cprintf("    Calling kfree(NULL)...\n");
+    kfree(NULL);
+    cprintf("    kfree(NULL) completed without panic.\n");
+    cprintf("\n");
 
     // --- 测试 2: 基本功能和 LIFO 行为 ---
     cprintf("  - Test 2: Basic alloc/free and LIFO check...\n");
     void *p1 = kmalloc(32);
+    cprintf("    1. Allocated p1 at address: %p\n", p1);
     assert(p1 != NULL);
+    cprintf("    2. Freed p1. This address should now be at the top of the freelist.\n");
     kfree(p1);
     void *p2 = kmalloc(32);
-    assert(p2 != NULL && p1 == p2); // LIFO 特性
+    cprintf("    3. Allocated p2 at address: %p\n", p2);
+    assert(p2 != NULL);
+    cprintf("    4. Checking if p1 (%p) == p2 (%p) to confirm LIFO behavior...\n", p1, p2);
+    assert(p1 == p2);
+    cprintf("       LIFO behavior confirmed: The same address was returned.\n");
     kfree(p2);
+    cprintf("\n");
 
     // --- 测试 3: 数据完整性 ---
     cprintf("  - Test 3: Data integrity check...\n");
-    char *p_char = kmalloc(100); // -> kmalloc-128
+    char *p_char = kmalloc(100);
     assert(p_char != NULL);
     strcpy(p_char, "Hello, SLUB!");
     assert(strcmp(p_char, "Hello, SLUB!") == 0);
     kfree(p_char);
+    cprintf("\n");
 
     // --- 测试 4: 强制 Slab 增长 ---
     cprintf("  - Test 4: Forcing slab growth...\n");
-    void *p_array[500];
+    current_slab_addr = NULL; // 重置跟踪变量
+    slab_count = 0;           // 重置跟踪变量
+    cprintf("    Allocating 500 objects of size 64. Expecting multiple slab creations.\n");
     for (int i = 0; i < 500; i++) {
-        p_array[i] = kmalloc(64);
+        p_array[i] = kmalloc(64); // 使用在顶部声明的 p_array
         assert(p_array[i] != NULL);
-        // 确保每次分配的指针都唯一
+        void *new_slab_addr = (void *)ROUNDDOWN((uintptr_t)p_array[i], PGSIZE);
+        if (new_slab_addr != current_slab_addr) {
+            current_slab_addr = new_slab_addr;
+            slab_count++;
+            cprintf("    Allocation %d: Switched to a NEW slab (Slab #%d) at %p\n", i, slab_count, current_slab_addr);
+        }
         for (int j = 0; j < i; j++) {
             assert(p_array[i] != p_array[j]);
         }
     }
+    cprintf("    Successfully allocated 500 objects across %d slabs.\n", slab_count);
+    cprintf("    Now freeing all 500 objects from Test 4...\n");
     for (int i = 0; i < 500; i++) {
         kfree(p_array[i]);
     }
+    cprintf("    All objects from Test 4 freed.\n");
+    cprintf("\n");
 
     // --- 测试 5: 混合分配与释放 ---
     cprintf("  - Test 5: Mixed size allocation and free...\n");
-    void *ptr_small = kmalloc(30);  // -> kmalloc-32
-    void *ptr_large = kmalloc(1000); // -> kmalloc-1024
-    void *ptr_mid = kmalloc(120);   // -> kmalloc-128
-    assert(ptr_small != NULL && ptr_large != NULL && ptr_mid != NULL);
-    // 写入数据以确保没有互相覆盖
+    cprintf("    1. Allocating objects of different sizes...\n");
+    void *ptr_small = kmalloc(30);
+    cprintf("       - kmalloc(30)  -> should be routed to kmalloc-32 cache, got ptr: %p\n", ptr_small);
+    assert(ptr_small != NULL);
+    void *ptr_large = kmalloc(1000);
+    cprintf("       - kmalloc(1000) -> should be routed to kmalloc-1024 cache, got ptr: %p\n", ptr_large);
+    assert(ptr_large != NULL);
+    void *ptr_mid = kmalloc(120);
+    cprintf("       - kmalloc(120)  -> should be routed to kmalloc-128 cache, got ptr: %p\n", ptr_mid);
+    assert(ptr_mid != NULL);
+    assert(ptr_small != ptr_large && ptr_small != ptr_mid && ptr_large != ptr_mid);
+    cprintf("    2. Writing distinct data patterns to each block...\n");
     memset(ptr_small, 0xAA, 30);
     memset(ptr_large, 0xBB, 1000);
     memset(ptr_mid,   0xCC, 120);
-    // 以不同于分配的顺序释放
+    cprintf("       Data written successfully.\n");
+    cprintf("    3. Freeing blocks in a different order (large, small, mid)...\n");
     kfree(ptr_large);
     kfree(ptr_small);
     kfree(ptr_mid);
+    cprintf("       All mixed-size blocks freed successfully.\n");
+    cprintf("\n");
 
     // --- 测试 6: 耗尽并回收检查 ---
-    cprintf("  - Test 6: Exhaust and recycle check...\n");
-    // 再次进行大规模分配，确保释放后的 slab 可以被正确地重新利用
+    cprintf("  - Test 6: Exhaust and Recycle check...\n");
+    cprintf("    Phase 1: Allocating 500 objects to create and fill slabs...\n");
+    void *slab_addrs[20];
+    slab_count = 0; // 使用在顶部声明的 slab_count
+    memset(slab_addrs, 0, sizeof(slab_addrs));
+    for (int i = 0; i < 500; i++) {
+        p_array[i] = kmalloc(32); // 使用在顶部声明的 p_array
+        assert(p_array[i] != NULL);
+        void *current_slab = (void *)ROUNDDOWN((uintptr_t)p_array[i], PGSIZE);
+        int found = 0;
+        for (int j = 0; j < slab_count; j++) {
+            if (slab_addrs[j] == current_slab) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found && slab_count < 20) {
+            slab_addrs[slab_count++] = current_slab;
+        }
+    }
+    cprintf("    Phase 1: Finished. Populated %d unique slabs for 'kmalloc-32'.\n", slab_count);
+    cprintf("    Phase 2: Freeing all 500 objects...\n");
+    for (int i = 0; i < 500; i++) {
+        kfree(p_array[i]);
+    }
+    cprintf("    Phase 2: Finished. Slabs are now available for recycling.\n");
+    cprintf("    Phase 3: Re-allocating 500 objects to verify recycling...\n");
+    void* first_recycled_obj = kmalloc(32);
+    assert(first_recycled_obj != NULL);
+    void* first_recycled_slab = (void*)ROUNDDOWN((uintptr_t)first_recycled_obj, PGSIZE);
+    int is_recycled = 0;
+    for(int i = 0; i < slab_count; i++) {
+        if(slab_addrs[i] == first_recycled_slab) {
+            is_recycled = 1;
+            cprintf("    SUCCESS: First re-allocated object is from a recycled slab at %p.\n", first_recycled_slab);
+            break;
+        }
+    }
+    assert(is_recycled);
+    kfree(first_recycled_obj);
     for (int i = 0; i < 500; i++) {
         p_array[i] = kmalloc(32);
         assert(p_array[i] != NULL);
@@ -264,6 +342,7 @@ kmalloc_check(void) {
     for (int i = 0; i < 500; i++) {
         kfree(p_array[i]);
     }
+    cprintf("    Phase 3: Finished. Recycling mechanism verified.\n");
 
     cprintf("kmalloc_check: All tests passed successfully!\n");
 }
