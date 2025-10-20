@@ -1,15 +1,3 @@
-/*
- * kern/mm/kmalloc.h
- *
- * (c) 2025 (Your Name/Group)
- *
- * General Purpose Kernel Malloc Interface
- *
- * This file provides a simple, general-purpose memory allocation
- * interface (like malloc/free) for the rest of the kernel.
- * It is built on top of the SLUB allocator.
- */
-
 #ifndef __KERN_MM_KMALLOC_H__
 #define __KERN_MM_KMALLOC_H__
 
