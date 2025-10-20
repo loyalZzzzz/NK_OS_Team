@@ -1,16 +1,5 @@
-/*
- * kern/mm/kmalloc.c
- *
- * (c) 2025 (Your Name/Group)
- *
- * General Purpose Kernel Malloc Implementation
- *
- * This file implements the frontend for the SLUB allocator, providing
- * a generic kmalloc/kfree interface.
- */
-
 #include <kmalloc.h>
-#include <slub.h>         // 1. 关键：使用 slub.h 作为后端
+#include <slub.h>         
 #include <pmm.h>
 #include <memlayout.h>
 #include <stdio.h>
@@ -168,7 +157,7 @@ kfree(void *ptr) {
         return;
     }
 
-    // 1. 这是最难的部分：根据 ptr 指针反向推导出它属于哪个 kmem_cache_t
+    // 1. 根据 ptr 指针反向推导出它属于哪个 kmem_cache_t
     // (简化实现：假设所有 kmalloc 的 slab 都是单页的)
     
     // a. 通过 ptr 找到它所在的页的基地址 (也就是 slab 的起始地址)
