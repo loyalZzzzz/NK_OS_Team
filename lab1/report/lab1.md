@@ -1,7 +1,3 @@
----
-title: lab1
-
----
 
 # lab1
 ## 练习1：理解内核启动中的程序入口操作
@@ -34,16 +30,31 @@ bootstack:
     .global bootstacktop
 bootstacktop:
 ```
-**指令 la sp, bootstacktop 完成了什么操作，目的是什么？**
+**1. 指令 la sp, bootstacktop 完成了什么操作，目的是什么？**
+```
+la sp, bootstacktop
+```
+- la: Load Address 的缩写。这是一个伪指令，汇编器会把它转换成一条或多条实际的机器指令，其作用是将一个符号的地址加载到寄存器中。
+- sp: Stack Pointer 寄存器。栈指针，它永远指向当前栈的栈顶。
+- bootstacktop: 这是稍后在数据段中定义的一个标签，它代表了我们为内核准备的初始栈空间的最高地址。
+
 ```
 bootstack:
     .space KSTACKSIZE
     .global bootstacktop
 ```
 这段代码分配了<u>KSTACKSIZE</u>大小的栈内存空间，将bootstack设置为栈底，bootstacktop设置为栈顶。
-kern_entry是内核的入口函数,la sp, bootstacktop将bootstacktop对应的栈顶地址赋值给sp寄存器，目的是初始化栈，为栈分配内存空间,为c语言准备了运行环境。
-**tail kern_init 完成了什么操作，目的是什么？**
-tail kern_init 会将 kern_init 函数的地址加载到程序计数器（pc）中，实现跳转到 kern_init 执行，并且tail 跳转不会保存当前指令的返回地址到 $ra 寄存器（返回地址寄存器），也就是不会再回到当前位置执行了。
+
+kern_entry是内核的入口函数,`la sp, bootstacktop` 将bootstacktop对应的栈顶地址赋值给sp寄存器，目的是初始化内核的栈，为栈分配内存空间,为c语言准备了运行环境。
+
+**2. tail kern_init 完成了什么操作，目的是什么？**
+```
+tail kern_init
+```
+- tail: 一条经过优化的跳转指令，代表 "尾调用 (Tail Call)"。tail 指令不会保存返回地址。它直接用 kern_init 的栈帧替换掉当前的栈帧。
+- kern_init: 用 C 语言编写的内核初始化函数。
+
+这句命令会将 kern_init 函数的地址加载到程序计数器（pc）中，实现跳转到 kern_init 执行，并且tail 跳转不会保存当前指令的返回地址到 $ra 寄存器（返回地址寄存器），也就是不会再回到当前位置执行了。
 kern_init函数在kern/init/init.c里
 ```
 #include <stdio.h>
@@ -64,8 +75,27 @@ int kern_init(void) {
 这段代码的作用是将C语言中未初始化的全局 / 静态变量默认值为 0，通过这一步确保其初始值正确，输出启动信息"(THU.CST) os is loading ...\n"，进入无限循环，维持内核运行状态。
 ***tail kern_init 目的是***跳转到内核初始化函数，让内核从启动准备阶段进入真正的初始化阶段，同时避免冗余的资源消耗。
 ## 练习2: 使用GDB验证启动流程
-**实验内容**
+**2.1 实验内容**
+
 为了熟悉使用 QEMU 和 GDB 的调试方法，请使用 GDB 跟踪 QEMU 模拟的 RISC-V 从加电开始，直到执行内核第一条指令（跳转到 0x80200000）的整个过程。通过调试，请思考并回答：RISC-V 硬件加电后最初执行的几条指令位于什么地址？它们主要完成了哪些功能？请在报告中简要记录你的调试过程、观察结果和问题的答案。
+
+**2.2 实验环境**
+- 硬件模拟器：QEMU (qemu-system-riscv64)
+- 调试器：GDB (riscv64-unknown-elf-gdb)
+- 引导加载程序：OpenSBI (QEMU 默认加载)
+  
+**2.3 实验步骤**
+1. 启动调试会话： 打开一个终端，执行 make qemu，打开第二个终端，执行 make gdb
+2. 查看pc寄存器当前位置：`(gdb) i r pc`
+3. 执行单步汇编指令： `si`
+4. 反向执行
+   ```
+   (gdb) record
+   (gdb) rsi  # 跳转到紧邻的上一条汇编指令
+   (gdb) rc   # 让程序向后运行，直到遇到上一个断点或程序起点
+   ```
+   
+**2.4 实验过程及结果**
 
 首先，启动qemu,在lab1的源码的目录下执行命令`make qemu`
 - [ ] ![12](https://hackmd.io/_uploads/rk4_aIT2xe.jpg)
@@ -111,6 +141,29 @@ t0             0x80000000       2147483648
 单步执行，查看t0寄存器的值，可以看到t0的值在pc=0x1010时为0x80000000
 所以PC跳转到0x80000000处执行指令。
 使用`watch *0x80200000`观察内核加载瞬间，避免单步跟踪大量代码。
+
+在运行到断点处```kern_entry```后，我们又尝试分析了部分指令，输入```x/10i $pc```后，我们可以看到后续运行的指令如下所示，可以看到有一个跳转指令，跳转到我们```init.c```文件中的```kern_init```函数，也就是我们内核的真实入口处。
+
+```
+(gdb) b* kern_entry  
+Breakpoint 1 at 0x80200000: file kern/init/entry.S, line 7.
+(gdb) c
+Continuing.
+
+Breakpoint 1, kern_entry () at kern/init/entry.S:7
+7           la sp, bootstacktop
+(gdb) x/10i $pc
+=> 0x80200000 <kern_entry>:     auipc   sp,0x3
+   0x80200004 <kern_entry+4>:   mv      sp,sp
+   0x80200008 <kern_entry+8>:   j       0x8020000a <kern_init>
+   0x8020000a <kern_init>:      auipc   a0,0x3
+   0x8020000e <kern_init+4>:    addi    a0,a0,-2
+   0x80200012 <kern_init+8>:    auipc   a2,0x3
+   0x80200016 <kern_init+12>:   addi    a2,a2,-10
+   0x8020001a <kern_init+16>:   addi    sp,sp,-16
+   0x8020001c <kern_init+18>:   li      a1,0
+   0x8020001e <kern_init+20>:   sub     a2,a2,a0
+   ```
 
 ## 实验中遇到的问题
 **1.输入指令 make qemu 时报错如下**
