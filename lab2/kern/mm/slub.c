@@ -1,15 +1,3 @@
-/*
- * kern/mm/slub.c
- *
- * (c) 2025 (Your Name/Group)
- *
- * SLUB Allocator Core Implementation
- *
- * This file implements the backend logic for the SLUB memory allocator.
- * It handles the creation of caches, and the allocation/freeing of
- * objects from slabs.
- */
-
 #include <slub.h>
 #include <pmm.h>         // 1. 包含 pmm.h, 用于 alloc_pages/free_pages
 #include <memlayout.h>   // 2. 包含 memlayout.h, 用于 PGSIZE, page2kva, pa2page, PADDR
