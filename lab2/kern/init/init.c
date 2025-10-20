@@ -38,6 +38,8 @@ int kern_init(void) {
 
     // grade_backtrace();
     pmm_init();  // init physical memory management
+    kmalloc_init();  // 初始化 SLUB/kmalloc 系统
+    kmalloc_check(); // 调用自检函数
 
     /* do nothing */
     while (1)
