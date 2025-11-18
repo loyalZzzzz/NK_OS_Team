@@ -1134,8 +1134,14 @@ kmalloc_init(void) {
 ```
 ##### 4.2.2 通用分配 (kmalloc) 与通用释放 (kfree)
 - 逻辑详解:
-    - `kmalloc(size)`: 将请求的 size 向上取整到最接近的 2 的幂次，然后从 `kmalloc_caches` 数组中选择对应的 Cache，并调用 `kmem_cache_alloc()`。
-    - `kfree(ptr)`: 使用 ROUNDDOWN 技巧从指针 ptr 反向推导出其所属的 `slab_t`，进而找到 `kmem_cache_t`，最后调用 `kmem_cache_free()`。
+    - `kmalloc(size_t size)` 的实现：
+        - 检查 `size`。
+        - 找到一个最“合身”的 cache（例如，`size = 100`，就向上取整到 128，选择 `kmalloc_caches[2]`）。
+        - 调用 `kmem_cache_alloc(kmalloc_caches[2])` 并返回结果。
+    - `kfree(void *ptr)` 的实现：
+        - 根据 `ptr` 指针**反向推导**出它属于哪个 `kmem_cache_t`。
+        - (简化实现：可以假设所有 `kmalloc` 的 `slab` 都是单页的。通过 `ptr` 找到它所在的页的基地址，`struct slab_t` 就在那里，`slab_t->cache` 就指向了正确的 `kmem_cache_t`。)
+        - 调用 `kmem_cache_free(cache, ptr)`。
 - 代码实现:
 ```c
 // 文件: kern/mm/kmalloc.c
@@ -1173,7 +1179,6 @@ kfree(void *ptr) {
 #### 4.3 内核集成
 ##### 逻辑详解:
 为了让 SLUB 系统生效，必须在内核启动时对其进行初始化。
-- 修改 Makefile: 确保 slub.c 和 kmalloc.c 被编译。在本项目中，Makefile 的自动发现机制可以完成此工作，无需修改。
 - 修改 kern/init/init.c: 在 pmm_init() 成功执行之后，必须依次调用 kmalloc_init() 和 kmalloc_check()。
 ##### 代码实现:
 ```c
@@ -1194,76 +1199,196 @@ kern_init(void) {
 }
 ```
 #### 4.4 测试用例
-##### 逻辑详解:
-为了确保实现的健壮性，我们编写了 `kmalloc_check()`` 函数来覆盖各种测试场景。以下是对每个测试用例设计的详细说明。
-- 边界情况: 测试 `kmalloc(0)`、`kfree(NULL)` 和请求过大内存。这是为了确保分配器对无效输入的处理是健壮的，不会因此崩溃。
-- 基本功能与 LIFO 行为: 测试单次分配和释放，并验证其后进先出的缓存行为。这直接验证了 freelist 的基本链表操作是否正确，是 SLUB 高效缓存命中的核心。
-- 数据完整性: 验证写入的数据在释放和重新分配后不会被破坏。这可以捕获因元数据错误覆盖对象空间而导致的内存损坏问题。
-- Slab 增长: 进行大规模循环分配，强制触发 `kmem_cache_grow()`。这直接测试了 SLUB 系统与底层 PMM 的交互，确保系统可以动态扩展。
-- 混合分配: 交错申请和释放不同大小的内存块。这重点测试 `kfree` 仅凭一个指针就能找到其所属正确 `cache` 的反向查找能力，是模拟真实复杂场景的关键。
-- 耗尽与回收: 验证 `slab` 在被完全释放后，能够被正确地放入 `slabs_empty` 列表，并在后续分配中被优先重用。这测试了 `slab` 的完整生命周期管理和资源回收能力，防止内存泄漏。
-#### 代码实现:
+
+#### 测试 1: 边界情况和无效输入 (Boundary and Invalid Cases)
+
+- **测试目的**: 验证分配器在处理无效或边缘输入时的健壮性。一个健壮的系统不应该在面对非标准输入时崩溃。
+- **测试逻辑**:
+    1. `assert(kmalloc(0) == NULL);`: 请求分配 0 字节。这是一种无意义的请求，一个正确的分配器应该拒绝它并返回 `NULL`。
+    2. `assert(kmalloc(4097) == NULL);`: 请求一个大于我们所设计的最大通用缓存（例如 2048 或 4096 字节）的内存块。`kmalloc` 的职责是处理“小对象”，对于大块内存请求，应该由底层的 `alloc_pages()` 处理。因此，`kmalloc` 应该拒绝此请求并返回 `NULL`。
+    3. `kfree(NULL);`: 尝试释放一个空指针。这是一个常见的编程错误，一个健壮的 `kfree` 函数应该能安全地处理这种情况，即什么也不做，而不是试图解引用 `NULL` 指针导致内核 `panic`。
 ```c
-void
-kmalloc_check(void) {
-    cprintf("kmalloc_check: starting SLUB/kmalloc system test.\n");
-
-    // --- 测试 1: 边界情况和无效输入 ---
+ // --- 测试 1: 边界情况和无效输入 ---
     cprintf("  - Test 1: Boundary and invalid cases...\n");
-    assert(kmalloc(0) == NULL);
-    assert(kmalloc(4097) == NULL); // 超过最大支持
-    kfree(NULL); // 应安全处理
+    void *res0 = kmalloc(0);
+    cprintf("    kmalloc(0) returned: %p\n", res0);
+    assert(res0 == NULL);
+    void *res_large = kmalloc(4097);
+    cprintf("    kmalloc(4097) returned: %p\n", res_large);
+    assert(res_large == NULL);
+    cprintf("    Calling kfree(NULL)...\n");
+    kfree(NULL);
+    cprintf("    kfree(NULL) completed without panic.\n");
+    cprintf("\n");
+```
+#### **测试 2: 基本功能和 LIFO 行为 (Basic Functionality and LIFO Behavior)**
 
-    // --- 测试 2: 基本功能和 LIFO 行为 ---
+- **测试目的**: 验证最核心的“分配 -> 释放 -> 再分配”循环，并确认 SLUB 内部 `freelist` 的**后进先出 (Last-In, First-Out, LIFO)** 缓存行为。
+- **测试逻辑**:
+    1. `void *p1 = kmalloc(32);`: 申请一个 32 字节的对象 `p1`。
+    2. `kfree(p1);`: 立即释放 `p1`。此时，`p1` 指向的对象被放回其所属 `slab` 的 `freelist` 的**头部**。
+    3. `void *p2 = kmalloc(32);`: 再次申请一个同样大小的对象。
+    4. `assert(p1 == p2);`: 由于 `freelist` 是 LIFO 的（从头部添加，也从头部取出），新申请的对象 `p2` 必然就是刚刚被释放的 `p1`。
+- **验证的关键点**: `kmem_cache_alloc` 和 `kmem_cache_free` 的基本功能是否正确，以及 `freelist` 的链表操作是否符合预期。这是对 SLUB **缓存命中**最高效场景的直接测试。
+```c 
+// --- 测试 2: 基本功能和 LIFO 行为 ---
     cprintf("  - Test 2: Basic alloc/free and LIFO check...\n");
     void *p1 = kmalloc(32);
+    cprintf("    1. Allocated p1 at address: %p\n", p1);
     assert(p1 != NULL);
+    cprintf("    2. Freed p1. This address should now be at the top of the freelist.\n");
     kfree(p1);
     void *p2 = kmalloc(32);
-    assert(p2 != NULL && p1 == p2); // LIFO 特性
+    cprintf("    3. Allocated p2 at address: %p\n", p2);
+    assert(p2 != NULL);
+    cprintf("    4. Checking if p1 (%p) == p2 (%p) to confirm LIFO behavior...\n", p1, p2);
+    assert(p1 == p2);
+    cprintf("       LIFO behavior confirmed: The same address was returned.\n");
     kfree(p2);
+```
 
-    // --- 测试 3: 数据完整性 ---
+#### **测试 3: 数据完整性 (Data Integrity)**
+
+- **测试目的**: 确保分配的内存区域是**可用且不会被破坏**的。
+- **测试逻辑**:
+    1. `char *p_char = kmalloc(100);`: 申请一块内存，它将被 `kmalloc` 向上取整，由 "kmalloc-128" 缓存处理。
+    2. `strcpy(p_char, "Hello, SLUB!");`: 向这块内存写入一段已知的数据。
+    3. `assert(strcmp(p_char, "Hello, SLUB!") == 0);`: 立即读回数据并进行比对。
+- **验证的关键点**:
+    - `kmalloc` 返回的指针是否指向一个**可写**的内存区域。
+    - SLUB 的管理头（`struct slab_t`）或 `freelist` 的指针操作，是否意外地**覆盖或破坏**了分配给用户的对象空间。
+```c
+// --- 测试 3: 数据完整性 ---
     cprintf("  - Test 3: Data integrity check...\n");
-    char *p_char = kmalloc(100); // -> kmalloc-128
+    char *p_char = kmalloc(100);
     assert(p_char != NULL);
     strcpy(p_char, "Hello, SLUB!");
     assert(strcmp(p_char, "Hello, SLUB!") == 0);
     kfree(p_char);
+```
 
-    // --- 测试 4: 强制 Slab 增长 ---
+#### **测试 4: 强制 Slab 增长 (Forcing Slab Growth)**
+
+- **测试目的**: 验证当一个 `kmem_cache` 的现有内存耗尽时，它与底层 PMM 的**交互**是否正常。这是对 `kmem_cache_grow()` 函数的直接压力测试。
+- **测试逻辑**:
+    1. 在一个循环中，连续申请大量（例如 500 个）同尺寸（64 字节）的对象。
+    2. 这个数量（500）被设计为远大于单个 `slab` 所能容纳的对象数量（一个 4KB 的页大约只能容纳 60 个 64 字节的对象）。
+    3. 这会强制 `kmem_cache_alloc` 多次发现当前 `slab` 已满，进而触发 `kmem_cache_grow()` 向 `alloc_pages()` 申请新的物理页来创建新的 `slab`。
+    4. `assert(p_array[i] != NULL);`: 确保每一次分配都成功。
+    5. **（增强测试）** `assert(p_array[i] != p_array[j]);`: 一个至关重要的检查，确保分配器返回的**每一个指针都是独一无二的**，没有将同一个对象错误地分配两次。
+    6. 最后，循环释放所有对象。
+- **验证的关键点**: SLUB 系统**动态扩展**的能力，以及与 PMM 的正确协作。
+```c 
+ // --- 测试 4: 强制 Slab 增长 ---
     cprintf("  - Test 4: Forcing slab growth...\n");
-    void *p_array[500];
+    current_slab_addr = NULL; // 重置跟踪变量
+    slab_count = 0;           // 重置跟踪变量
+    cprintf("    Allocating 500 objects of size 64. Expecting multiple slab creations.\n");
     for (int i = 0; i < 500; i++) {
-        p_array[i] = kmalloc(64);
+        p_array[i] = kmalloc(64); // 使用在顶部声明的 p_array
         assert(p_array[i] != NULL);
-        // 确保每次分配的指针都唯一
+        void *new_slab_addr = (void *)ROUNDDOWN((uintptr_t)p_array[i], PGSIZE);
+        if (new_slab_addr != current_slab_addr) {
+            current_slab_addr = new_slab_addr;
+            slab_count++;
+            cprintf("    Allocation %d: Switched to a NEW slab (Slab #%d) at %p\n", i, slab_count, current_slab_addr);
+        }
         for (int j = 0; j < i; j++) {
             assert(p_array[i] != p_array[j]);
         }
     }
+    cprintf("    Successfully allocated 500 objects across %d slabs.\n", slab_count);
+    cprintf("    Now freeing all 500 objects from Test 4...\n");
     for (int i = 0; i < 500; i++) {
         kfree(p_array[i]);
     }
+    cprintf("    All objects from Test 4 freed.\n");
+```
 
-    // --- 测试 5: 混合分配与释放 ---
+#### **测试 5: 混合分配与释放 (Mixed Allocation and Freeing)**
+
+- **测试目的**: 模拟内核中更真实的、**无序的、混合大小的**内存使用模式，重点测试 `kmalloc` 的**路由逻辑**和 `kfree` 的**反向查找能力**。
+- **测试逻辑**:
+    1. 连续申请三个不同大小的对象，它们将被路由到三个不同的 `kmem_cache`（"kmalloc-32", "kmalloc-1024", "kmalloc-128"）。
+    2. **（增强测试）** 分别向这三块内存写入不同的数据模式（如 `0xAA`, `0xBB`, `0xCC`），以在后续步骤中检查是否存在内存踩踏。
+    3. 以**不同于申请的顺序**释放这些对象（例如，先大，再小，最后中）。
+- **验证的关键点**: `kfree(ptr)` 的核心功能。`kfree` 仅凭一个 `void *ptr` 指针，必须能准确地反向推断出这个指针属于哪个 `slab`，进而属于哪个 `kmem_cache`，才能将其正确地归还到对应的 `freelist`。如果这个逻辑出错，将导致严重的内存损坏。
+```c 
+// --- 测试 5: 混合分配与释放 ---
     cprintf("  - Test 5: Mixed size allocation and free...\n");
-    void *ptr_small = kmalloc(30);  // -> kmalloc-32
-    void *ptr_large = kmalloc(1000); // -> kmalloc-1024
-    void *ptr_mid = kmalloc(120);   // -> kmalloc-128
-    assert(ptr_small != NULL && ptr_large != NULL && ptr_mid != NULL);
-    // 写入数据以确保没有互相覆盖
+    cprintf("    1. Allocating objects of different sizes...\n");
+    void *ptr_small = kmalloc(30);
+    cprintf("       - kmalloc(30)  -> should be routed to kmalloc-32 cache, got ptr: %p\n", ptr_small);
+    assert(ptr_small != NULL);
+    void *ptr_large = kmalloc(1000);
+    cprintf("       - kmalloc(1000) -> should be routed to kmalloc-1024 cache, got ptr: %p\n", ptr_large);
+    assert(ptr_large != NULL);
+    void *ptr_mid = kmalloc(120);
+    cprintf("       - kmalloc(120)  -> should be routed to kmalloc-128 cache, got ptr: %p\n", ptr_mid);
+    assert(ptr_mid != NULL);
+    assert(ptr_small != ptr_large && ptr_small != ptr_mid && ptr_large != ptr_mid);
+    cprintf("    2. Writing distinct data patterns to each block...\n");
     memset(ptr_small, 0xAA, 30);
     memset(ptr_large, 0xBB, 1000);
     memset(ptr_mid,   0xCC, 120);
-    // 以不同于分配的顺序释放
+    cprintf("       Data written successfully.\n");
+    cprintf("    3. Freeing blocks in a different order (large, small, mid)...\n");
     kfree(ptr_large);
     kfree(ptr_small);
     kfree(ptr_mid);
+    cprintf("       All mixed-size blocks freed successfully.\n");
+```
 
-    // --- 测试 6: 耗尽并回收检查 ---
-    cprintf("  - Test 6: Exhaust and recycle check...\n");
-    // 再次进行大规模分配，确保释放后的 slab 可以被正确地重新利用
+#### **测试 6: 耗尽并回收检查 (Exhaust and Recycle Check)**
+
+- **测试目的**: **（新增的增强测试）** 验证 `slab` 状态转换的完整生命周期，特别是 `full -> partial -> empty` 的转换，以及从 `slabs_empty` 链表中**回收和重用** `slab` 的能力。
+- **测试逻辑**:
+    1. 执行一次大规模分配（如测试 4），创建并填满多个 `slab`。
+    2. 执行一次大规模释放，将这些 `slab` 全部清空。此时，这些 `slab` 应该从 `slabs_full` 或 `slabs_partial` 移动到了 `slabs_empty` 链表。
+    3. **立即**再次执行同样的大规模分配。
+- **验证的关键点**: 第二次分配时，一个高效的 SLUB 实现应该优先**重用** `slabs_empty` 链表中的 `slab`（将其移回 `slabs_partial`），而不是频繁调用 `kmem_cache_grow()` 去向 PMM 申请全新的页。这验证了 `slab` 的**循环利用**机制是完整的，避免了 `slab` 泄漏。
+```c 
+// --- 测试 6: 耗尽并回收检查 ---
+    cprintf("  - Test 6: Exhaust and Recycle check...\n");
+    cprintf("    Phase 1: Allocating 500 objects to create and fill slabs...\n");
+    void *slab_addrs[20];
+    slab_count = 0; // 使用在顶部声明的 slab_count
+    memset(slab_addrs, 0, sizeof(slab_addrs));
+    for (int i = 0; i < 500; i++) {
+        p_array[i] = kmalloc(32); // 使用在顶部声明的 p_array
+        assert(p_array[i] != NULL);
+        void *current_slab = (void *)ROUNDDOWN((uintptr_t)p_array[i], PGSIZE);
+        int found = 0;
+        for (int j = 0; j < slab_count; j++) {
+            if (slab_addrs[j] == current_slab) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found && slab_count < 20) {
+            slab_addrs[slab_count++] = current_slab;
+        }
+    }
+    cprintf("    Phase 1: Finished. Populated %d unique slabs for 'kmalloc-32'.\n", slab_count);
+    cprintf("    Phase 2: Freeing all 500 objects...\n");
+    for (int i = 0; i < 500; i++) {
+        kfree(p_array[i]);
+    }
+    cprintf("    Phase 2: Finished. Slabs are now available for recycling.\n");
+    cprintf("    Phase 3: Re-allocating 500 objects to verify recycling...\n");
+    void* first_recycled_obj = kmalloc(32);
+    assert(first_recycled_obj != NULL);
+    void* first_recycled_slab = (void*)ROUNDDOWN((uintptr_t)first_recycled_obj, PGSIZE);
+    int is_recycled = 0;
+    for(int i = 0; i < slab_count; i++) {
+        if(slab_addrs[i] == first_recycled_slab) {
+            is_recycled = 1;
+            cprintf("    SUCCESS: First re-allocated object is from a recycled slab at %p.\n", first_recycled_slab);
+            break;
+        }
+    }
+    assert(is_recycled);
+    kfree(first_recycled_obj);
     for (int i = 0; i < 500; i++) {
         p_array[i] = kmalloc(32);
         assert(p_array[i] != NULL);
@@ -1271,10 +1396,12 @@ kmalloc_check(void) {
     for (int i = 0; i < 500; i++) {
         kfree(p_array[i]);
     }
+    cprintf("    Phase 3: Finished. Recycling mechanism verified.\n");
 
     cprintf("kmalloc_check: All tests passed successfully!\n");
 }
 ```
+
 #### 验证输出
 ```
 kmalloc_init: initializing general purpose SLUB caches
@@ -1287,13 +1414,69 @@ kmem_cache_create: created cache kmalloc-1024 (obj_size=1024, num_per_slab=3)
 kmem_cache_create: created cache kmalloc-2048 (obj_size=2048, num_per_slab=1)
 kmalloc_init: initialization complete.
 kmalloc_check: starting SLUB/kmalloc system test.
+
   - Test 1: Boundary and invalid cases...
+    kmalloc(0) returned: 0x0
 kmalloc: request size 4097 too large, use alloc_pages instead.
+    kmalloc(4097) returned: 0x0
+    Calling kfree(NULL)...
+    kfree(NULL) completed without panic.
+
   - Test 2: Basic alloc/free and LIFO check...
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-32' at 0xffffffffc034f000
+    1. Allocated p1 at address: 0xffffffffc034ffd0
+    2. Freed p1. This address should now be at the top of the freelist.
+    3. Allocated p2 at address: 0xffffffffc034ffd0
+    4. Checking if p1 (0xffffffffc034ffd0) == p2 (0xffffffffc034ffd0) to confirm LIFO behavior...
+       LIFO behavior confirmed: The same address was returned.
+
   - Test 3: Data integrity check...
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-128' at 0xffffffffc0350000
+
   - Test 4: Forcing slab growth...
+    Allocating 500 objects of size 64. Expecting multiple slab creations.
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-64' at 0xffffffffc0351000
+    Allocation 0: Switched to a NEW slab (Slab #1) at 0xffffffffc0351000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-64' at 0xffffffffc0352000
+    Allocation 63: Switched to a NEW slab (Slab #2) at 0xffffffffc0352000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-64' at 0xffffffffc0353000
+    Allocation 126: Switched to a NEW slab (Slab #3) at 0xffffffffc0353000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-64' at 0xffffffffc0354000
+    Allocation 189: Switched to a NEW slab (Slab #4) at 0xffffffffc0354000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-64' at 0xffffffffc0355000
+    Allocation 252: Switched to a NEW slab (Slab #5) at 0xffffffffc0355000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-64' at 0xffffffffc0356000
+    Allocation 315: Switched to a NEW slab (Slab #6) at 0xffffffffc0356000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-64' at 0xffffffffc0357000
+    Allocation 378: Switched to a NEW slab (Slab #7) at 0xffffffffc0357000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-64' at 0xffffffffc0358000
+    Allocation 441: Switched to a NEW slab (Slab #8) at 0xffffffffc0358000
+    Successfully allocated 500 objects across 8 slabs.
+    Now freeing all 500 objects from Test 4...
+    All objects from Test 4 freed.
+
   - Test 5: Mixed size allocation and free...
-  - Test 6: Exhaust and recycle check...
+    1. Allocating objects of different sizes...
+       - kmalloc(30)  -> should be routed to kmalloc-32 cache, got ptr: 0xffffffffc034ffd0
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-1024' at 0xffffffffc0359000
+       - kmalloc(1000) -> should be routed to kmalloc-1024 cache, got ptr: 0xffffffffc0359830
+       - kmalloc(120)  -> should be routed to kmalloc-128 cache, got ptr: 0xffffffffc0350f30
+    2. Writing distinct data patterns to each block...
+       Data written successfully.
+    3. Freeing blocks in a different order (large, small, mid)...
+       All mixed-size blocks freed successfully.
+
+  - Test 6: Exhaust and Recycle check...
+    Phase 1: Allocating 500 objects to create and fill slabs...
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-32' at 0xffffffffc035a000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-32' at 0xffffffffc035b000
+    -> kmem_cache_grow: New slab created for cache 'kmalloc-32' at 0xffffffffc035c000
+    Phase 1: Finished. Populated 4 unique slabs for 'kmalloc-32'.
+    Phase 2: Freeing all 500 objects...
+    Phase 2: Finished. Slabs are now available for recycling.
+    Phase 3: Re-allocating 500 objects to verify recycling...
+    SUCCESS: First re-allocated object is from a recycled slab at 0xffffffffc034f000.
+    Phase 3: Finished. Recycling mechanism verified.
 kmalloc_check: All tests passed successfully!
 ```
 
